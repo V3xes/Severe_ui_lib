@@ -2,19 +2,21 @@ local Library = {}
 Library.__index = Library
 
 local DrawingObjects = {}
+local Notifications = {}
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 
 local CONFIG = {
-    TOGGLE_KEY = 0x2D, -- Insert key
+    TOGGLE_KEY = 0x2D,
     
     WINDOW = {
         X = 300,
         Y = 200,
-        WIDTH = 450,
-        HEIGHT = 340,
-        MIN_WIDTH = 350,
-        MIN_HEIGHT = 280,
-        SIDEBAR_WIDTH = 130,
+        WIDTH = 500,
+        HEIGHT = 400,
+        MIN_WIDTH = 400,
+        MIN_HEIGHT = 300,
+        SIDEBAR_WIDTH = 140,
         TITLE_HEIGHT = 30,
         TAB_HEIGHT = 30,
         SCALE_MARGIN = 15
@@ -28,18 +30,29 @@ local CONFIG = {
         BORDER = Color3.fromRGB(0, 50, 150),
         SHADOW = Color3.fromRGB(0, 0, 0),
         TEXT = Color3.fromRGB(50, 50, 50),
+        TEXT_DARK = Color3.fromRGB(30, 30, 30),
+        TEXT_LIGHT = Color3.fromRGB(150, 150, 150),
         ACCENT = Color3.fromRGB(0, 200, 100),
         WHITE = Color3.fromRGB(255, 255, 255),
         TOGGLE_OFF = Color3.fromRGB(180, 180, 180),
         SLIDER_BG = Color3.fromRGB(200, 200, 200),
         DROPDOWN_BG = Color3.fromRGB(255, 255, 255),
-        DROPDOWN_HOVER = Color3.fromRGB(220, 230, 255)
+        DROPDOWN_HOVER = Color3.fromRGB(220, 230, 255),
+        BUTTON_BG = Color3.fromRGB(220, 220, 225),
+        BUTTON_HOVER = Color3.fromRGB(200, 200, 210),
+        INPUT_BG = Color3.fromRGB(255, 255, 255),
+        SEPARATOR = Color3.fromRGB(200, 200, 200),
+        NOTIFICATION_BG = Color3.fromRGB(40, 40, 45),
+        NOTIFICATION_SUCCESS = Color3.fromRGB(0, 200, 100),
+        NOTIFICATION_ERROR = Color3.fromRGB(255, 80, 80),
+        NOTIFICATION_INFO = Color3.fromRGB(0, 150, 255),
+        NOTIFICATION_WARNING = Color3.fromRGB(255, 180, 0)
     },
     
     LAYOUT = {
         CONTENT_PADDING = 15,
         ITEM_HEIGHT = 25,
-        ITEM_SPACING = 8,
+        ITEM_SPACING = 10,
         TOGGLE_WIDTH = 40,
         TOGGLE_HEIGHT = 14,
         SLIDER_HEIGHT = 6,
@@ -48,14 +61,22 @@ local CONFIG = {
         CHECKBOX_SIZE = 12,
         COLOR_PREVIEW_SIZE = 30,
         COLOR_PICKER_SIZE = 120,
-        HUE_BAR_WIDTH = 20
+        HUE_BAR_WIDTH = 20,
+        BUTTON_HEIGHT = 28,
+        INPUT_HEIGHT = 25,
+        KEYBIND_WIDTH = 80,
+        NOTIFICATION_WIDTH = 250,
+        NOTIFICATION_HEIGHT = 60,
+        NOTIFICATION_SPACING = 10
     },
     
     TEXT_SIZE = {
         TITLE = 16,
         TAB = 14,
         LABEL = 14,
-        VALUE = 12
+        VALUE = 12,
+        SMALL = 10,
+        NOTIFICATION = 13
     },
     
     ZINDEX = {
@@ -67,7 +88,8 @@ local CONFIG = {
         CONTENT = 5,
         COMPONENT = 10,
         DROPDOWN = 50,
-        PICKER = 60
+        PICKER = 60,
+        NOTIFICATION = 100
     }
 }
 
@@ -83,6 +105,8 @@ local Window = {
 
 local ActiveDropdown = nil
 local ActivePicker = nil
+local ActiveKeybind = nil
+local ActiveInput = nil
 
 local function vec(x, y) return Vector2.new(x, y) end
 local function mousePos() return getmouseposition() end
@@ -109,6 +133,14 @@ local function hsvToRgb(h, s, v)
     elseif i == 5 then r, g, b = v, p, q
     end
     return Color3.fromRGB(r * 255, g * 255, b * 255)
+end
+
+local function keyCodeToString(keyCode)
+    local name = tostring(keyCode)
+    if string.find(name, "Enum.KeyCode.") then
+        return string.gsub(name, "Enum.KeyCode.", "")
+    end
+    return name
 end
 
 local function createDrawing(drawingType, properties)
@@ -156,6 +188,18 @@ local function makeText(text, size, pos, color, z)
     })
 end
 
+local function makeCircle(color, radius, pos, filled, z)
+    return createDrawing("Circle", {
+        Color = color,
+        Radius = radius,
+        Position = pos,
+        Filled = filled,
+        Thickness = 1,
+        ZIndex = z or 1
+    })
+end
+
+-- COMPONENT: Toggle
 local Toggle = {}
 Toggle.__index = Toggle
 
@@ -165,6 +209,7 @@ function Toggle.new(options, accentColor)
     self.value = options.Default or false
     self.callback = options.Callback
     self.accent = accentColor or CONFIG.COLORS.ACCENT
+    self.tooltip = options.Tooltip
     
     self.boxOut = makeSquare(CONFIG.COLORS.BORDER, vec(CONFIG.LAYOUT.TOGGLE_WIDTH, CONFIG.LAYOUT.TOGGLE_HEIGHT), vec(0,0), false, 1, CONFIG.ZINDEX.COMPONENT)
     self.boxFill = makeSquare(self.accent, vec(CONFIG.LAYOUT.TOGGLE_WIDTH - 4, CONFIG.LAYOUT.TOGGLE_HEIGHT - 4), vec(0,0), true, 1, CONFIG.ZINDEX.COMPONENT + 1)
@@ -199,6 +244,7 @@ end
 function Toggle:GetValue() return self.value end
 function Toggle:SetValue(v) self.value = v; if self.callback then self.callback(v) end end
 
+-- COMPONENT: Slider
 local Slider = {}
 Slider.__index = Slider
 
@@ -208,6 +254,8 @@ function Slider.new(options, accentColor)
     self.min = options.Min or 0
     self.max = options.Max or 100
     self.value = options.Default or 50
+    self.increment = options.Increment or 1
+    self.suffix = options.Suffix or ""
     self.callback = options.Callback
     self.accent = accentColor or CONFIG.COLORS.TITLE
     self.dragging = false
@@ -234,14 +282,17 @@ function Slider:Update(x, y)
     self.fill.Position = vec(x, y + 20)
     self.fill.Size = vec(fillW, CONFIG.LAYOUT.SLIDER_HEIGHT)
     self.knob.Position = vec(x + fillW - 3, y + 16)
-    self.valueText.Text = tostring(math.floor(self.value))
+    
+    local displayVal = math.floor(self.value / self.increment) * self.increment
+    self.valueText.Text = tostring(displayVal) .. self.suffix
     self.valueText.Position = vec(x + self.width + 10, y + 16)
 end
 
 function Slider:HandleDrag(mx, my)
     if self.dragging then
         local percent = math.clamp((mx - self.bg.Position.X) / self.width, 0, 1)
-        self.value = self.min + (self.max - self.min) * percent
+        local rawValue = self.min + (self.max - self.min) * percent
+        self.value = math.floor(rawValue / self.increment) * self.increment
         if self.callback then self.callback(self.value) end
         return true
     end
@@ -269,6 +320,7 @@ end
 function Slider:GetValue() return self.value end
 function Slider:SetValue(v) self.value = math.clamp(v, self.min, self.max); if self.callback then self.callback(self.value) end end
 
+-- COMPONENT: Dropdown
 local Dropdown = {}
 Dropdown.__index = Dropdown
 
@@ -376,7 +428,15 @@ end
 
 function Dropdown:GetValue() return self.options[self.selected] end
 function Dropdown:SetValue(v) for i, opt in ipairs(self.options) do if opt == v then self.selected = i; break end end end
+function Dropdown:Refresh(newOptions) 
+    self.options = newOptions 
+    self.selected = 1
+    for i, item in ipairs(self.items) do
+        item.text.Text = newOptions[i] or ""
+    end
+end
 
+-- COMPONENT: MultiSelect
 local MultiSelect = {}
 MultiSelect.__index = MultiSelect
 
@@ -391,6 +451,9 @@ function MultiSelect.new(options, accentColor)
     self.width = 150
     
     for _, opt in ipairs(self.options) do self.values[opt] = false end
+    if options.Default then
+        for _, v in ipairs(options.Default) do self.values[v] = true end
+    end
     
     self.label = makeText(self.name, CONFIG.TEXT_SIZE.LABEL, vec(0,0), CONFIG.COLORS.TEXT, CONFIG.ZINDEX.COMPONENT)
     self.label.Outline = false
@@ -507,6 +570,7 @@ function MultiSelect:SetSelected(vals)
     for _, v in ipairs(vals or {}) do self.values[v] = true end
 end
 
+-- COMPONENT: ColorPicker
 local ColorPicker = {}
 ColorPicker.__index = ColorPicker
 
@@ -555,6 +619,9 @@ function ColorPicker.new(options, accentColor)
     
     self.resultPreview = makeSquare(self.value, vec(50, 30), vec(0,0), true, 1, CONFIG.ZINDEX.PICKER + 2)
     self.resultBorder = makeSquare(CONFIG.COLORS.BORDER, vec(50, 30), vec(0,0), false, 1, CONFIG.ZINDEX.PICKER + 3)
+    
+    self.rgbText = makeText("R:255 G:255 B:255", CONFIG.TEXT_SIZE.SMALL, vec(0,0), CONFIG.COLORS.TEXT, CONFIG.ZINDEX.PICKER + 2)
+    self.rgbText.Outline = false
     
     return self
 end
@@ -606,6 +673,11 @@ function ColorPicker:Update(x, y)
         self.resultPreview.Visible = Window.visible
         self.resultBorder.Position = vec(hueX + 30, svY)
         self.resultBorder.Visible = Window.visible
+        
+        local r, g, b = math.floor(self.value.R * 255), math.floor(self.value.G * 255), math.floor(self.value.B * 255)
+        self.rgbText.Text = "R:" .. r .. " G:" .. g .. " B:" .. b
+        self.rgbText.Position = vec(hueX + 30, svY + 35)
+        self.rgbText.Visible = Window.visible
     else
         self.pickerBg.Visible = false
         self.pickerBorder.Visible = false
@@ -615,6 +687,7 @@ function ColorPicker:Update(x, y)
         self.hueCursor.Visible = false
         self.resultPreview.Visible = false
         self.resultBorder.Visible = false
+        self.rgbText.Visible = false
     end
 end
 
@@ -694,6 +767,393 @@ end
 function ColorPicker:GetValue() return self.value end
 function ColorPicker:SetValue(v) self.value = v end
 
+-- COMPONENT: Button
+local Button = {}
+Button.__index = Button
+
+function Button.new(options, accentColor)
+    local self = setmetatable({}, Button)
+    self.name = options.Name or "Button"
+    self.callback = options.Callback
+    self.accent = accentColor or CONFIG.COLORS.ACCENT
+    self.width = options.Width or 150
+    
+    self.bg = makeSquare(CONFIG.COLORS.BUTTON_BG, vec(self.width, CONFIG.LAYOUT.BUTTON_HEIGHT), vec(0,0), true, 1, CONFIG.ZINDEX.COMPONENT)
+    self.border = makeSquare(CONFIG.COLORS.BORDER, vec(self.width, CONFIG.LAYOUT.BUTTON_HEIGHT), vec(0,0), false, 1, CONFIG.ZINDEX.COMPONENT + 1)
+    self.text = makeText(self.name, CONFIG.TEXT_SIZE.LABEL, vec(0,0), CONFIG.COLORS.TEXT, CONFIG.ZINDEX.COMPONENT + 2)
+    self.text.Outline = false
+    self.text.Center = true
+    
+    return self
+end
+
+function Button:Update(x, y)
+    self.bg.Position = vec(x, y)
+    self.border.Position = vec(x, y)
+    self.text.Position = vec(x + self.width / 2, y + 6)
+    
+    local mp = mousePos()
+    local hovered = isInside(vec(x, y), vec(self.width, CONFIG.LAYOUT.BUTTON_HEIGHT), mp)
+    self.bg.Color = hovered and CONFIG.COLORS.BUTTON_HOVER or CONFIG.COLORS.BUTTON_BG
+end
+
+function Button:HandleClick(mx, my)
+    if isInside(self.bg.Position, vec(self.width, CONFIG.LAYOUT.BUTTON_HEIGHT), vec(mx, my)) then
+        if self.callback then self.callback() end
+        return true
+    end
+    return false
+end
+
+function Button:SetVisible(visible)
+    self.bg.Visible = visible and Window.visible
+    self.border.Visible = visible and Window.visible
+    self.text.Visible = visible and Window.visible
+end
+
+-- COMPONENT: Keybind
+local Keybind = {}
+Keybind.__index = Keybind
+
+function Keybind.new(options, accentColor)
+    local self = setmetatable({}, Keybind)
+    self.name = options.Name or "Keybind"
+    self.value = options.Default or Enum.KeyCode.Unknown
+    self.callback = options.Callback
+    self.accent = accentColor or CONFIG.COLORS.ACCENT
+    self.listening = false
+    
+    self.label = makeText(self.name, CONFIG.TEXT_SIZE.LABEL, vec(0,0), CONFIG.COLORS.TEXT, CONFIG.ZINDEX.COMPONENT)
+    self.label.Outline = false
+    self.box = makeSquare(CONFIG.COLORS.INPUT_BG, vec(CONFIG.LAYOUT.KEYBIND_WIDTH, CONFIG.LAYOUT.INPUT_HEIGHT), vec(0,0), true, 1, CONFIG.ZINDEX.COMPONENT)
+    self.boxBorder = makeSquare(CONFIG.COLORS.BORDER, vec(CONFIG.LAYOUT.KEYBIND_WIDTH, CONFIG.LAYOUT.INPUT_HEIGHT), vec(0,0), false, 1, CONFIG.ZINDEX.COMPONENT + 1)
+    self.text = makeText("None", CONFIG.TEXT_SIZE.VALUE, vec(0,0), CONFIG.COLORS.TEXT, CONFIG.ZINDEX.COMPONENT + 2)
+    self.text.Outline = false
+    
+    return self
+end
+
+function Keybind:Update(x, y)
+    self.label.Position = vec(x, y)
+    self.box.Position = vec(x + 100, y - 2)
+    self.boxBorder.Position = vec(x + 100, y - 2)
+    self.boxBorder.Color = self.listening and self.accent or CONFIG.COLORS.BORDER
+    
+    if self.listening then
+        self.text.Text = "..."
+    else
+        self.text.Text = self.value ~= Enum.KeyCode.Unknown and keyCodeToString(self.value) or "None"
+    end
+    self.text.Position = vec(x + 105, y + 2)
+end
+
+function Keybind:HandleClick(mx, my)
+    if isInside(self.box.Position, vec(CONFIG.LAYOUT.KEYBIND_WIDTH, CONFIG.LAYOUT.INPUT_HEIGHT), vec(mx, my)) then
+        self.listening = not self.listening
+        if self.listening then
+            if ActiveKeybind and ActiveKeybind ~= self then ActiveKeybind.listening = false end
+            ActiveKeybind = self
+        else
+            ActiveKeybind = nil
+        end
+        return true
+    end
+    return false
+end
+
+function Keybind:HandleKeyPress(keyCode)
+    if self.listening then
+        if keyCode == Enum.KeyCode.Escape then
+            self.value = Enum.KeyCode.Unknown
+        else
+            self.value = keyCode
+        end
+        self.listening = false
+        ActiveKeybind = nil
+        if self.callback then self.callback(self.value) end
+        return true
+    end
+    return false
+end
+
+function Keybind:SetVisible(visible)
+    self.label.Visible = visible and Window.visible
+    self.box.Visible = visible and Window.visible
+    self.boxBorder.Visible = visible and Window.visible
+    self.text.Visible = visible and Window.visible
+end
+
+function Keybind:GetValue() return self.value end
+function Keybind:SetValue(v) self.value = v end
+function Keybind:IsPressed() 
+    local keys = getpressedkeys and getpressedkeys() or {}
+    for _, k in ipairs(keys) do
+        if k == self.value.Value then return true end
+    end
+    return false
+end
+
+-- COMPONENT: TextBox (Input)
+local TextBox = {}
+TextBox.__index = TextBox
+
+function TextBox.new(options, accentColor)
+    local self = setmetatable({}, TextBox)
+    self.name = options.Name or "Input"
+    self.value = options.Default or ""
+    self.placeholder = options.Placeholder or "Enter text..."
+    self.callback = options.Callback
+    self.accent = accentColor or CONFIG.COLORS.ACCENT
+    self.focused = false
+    self.width = options.Width or 150
+    
+    self.label = makeText(self.name, CONFIG.TEXT_SIZE.LABEL, vec(0,0), CONFIG.COLORS.TEXT, CONFIG.ZINDEX.COMPONENT)
+    self.label.Outline = false
+    self.box = makeSquare(CONFIG.COLORS.INPUT_BG, vec(self.width, CONFIG.LAYOUT.INPUT_HEIGHT), vec(0,0), true, 1, CONFIG.ZINDEX.COMPONENT)
+    self.boxBorder = makeSquare(CONFIG.COLORS.BORDER, vec(self.width, CONFIG.LAYOUT.INPUT_HEIGHT), vec(0,0), false, 1, CONFIG.ZINDEX.COMPONENT + 1)
+    self.text = makeText("", CONFIG.TEXT_SIZE.VALUE, vec(0,0), CONFIG.COLORS.TEXT, CONFIG.ZINDEX.COMPONENT + 2)
+    self.text.Outline = false
+    
+    return self
+end
+
+function TextBox:Update(x, y)
+    self.label.Position = vec(x, y)
+    self.box.Position = vec(x, y + 20)
+    self.boxBorder.Position = vec(x, y + 20)
+    self.boxBorder.Color = self.focused and self.accent or CONFIG.COLORS.BORDER
+    
+    if self.value == "" then
+        self.text.Text = self.placeholder
+        self.text.Color = CONFIG.COLORS.TEXT_LIGHT
+    else
+        self.text.Text = self.value .. (self.focused and "|" or "")
+        self.text.Color = CONFIG.COLORS.TEXT
+    end
+    self.text.Position = vec(x + 5, y + 25)
+end
+
+function TextBox:HandleClick(mx, my)
+    local wasClicked = isInside(self.box.Position, vec(self.width, CONFIG.LAYOUT.INPUT_HEIGHT), vec(mx, my))
+    if wasClicked then
+        self.focused = true
+        if ActiveInput and ActiveInput ~= self then ActiveInput.focused = false end
+        ActiveInput = self
+        return true
+    elseif self.focused then
+        self.focused = false
+        if self.callback then self.callback(self.value) end
+        ActiveInput = nil
+    end
+    return false
+end
+
+function TextBox:HandleKeyPress(keyCode)
+    if not self.focused then return false end
+    
+    if keyCode == Enum.KeyCode.Backspace then
+        self.value = string.sub(self.value, 1, -2)
+    elseif keyCode == Enum.KeyCode.Return then
+        self.focused = false
+        ActiveInput = nil
+        if self.callback then self.callback(self.value) end
+    elseif keyCode == Enum.KeyCode.Escape then
+        self.focused = false
+        ActiveInput = nil
+    end
+    return true
+end
+
+function TextBox:HandleTextInput(text)
+    if self.focused then
+        self.value = self.value .. text
+        return true
+    end
+    return false
+end
+
+function TextBox:SetVisible(visible)
+    self.label.Visible = visible and Window.visible
+    self.box.Visible = visible and Window.visible
+    self.boxBorder.Visible = visible and Window.visible
+    self.text.Visible = visible and Window.visible
+end
+
+function TextBox:GetValue() return self.value end
+function TextBox:SetValue(v) self.value = v end
+
+-- COMPONENT: Label
+local Label = {}
+Label.__index = Label
+
+function Label.new(options, accentColor)
+    local self = setmetatable({}, Label)
+    self.text = options.Text or "Label"
+    self.color = options.Color or CONFIG.COLORS.TEXT
+    self.size = options.Size or CONFIG.TEXT_SIZE.LABEL
+    
+    self.label = makeText(self.text, self.size, vec(0,0), self.color, CONFIG.ZINDEX.COMPONENT)
+    self.label.Outline = false
+    
+    return self
+end
+
+function Label:Update(x, y)
+    self.label.Position = vec(x, y)
+end
+
+function Label:SetVisible(visible)
+    self.label.Visible = visible and Window.visible
+end
+
+function Label:SetText(text) self.text = text; self.label.Text = text end
+function Label:SetColor(color) self.color = color; self.label.Color = color end
+
+-- COMPONENT: Separator
+local Separator = {}
+Separator.__index = Separator
+
+function Separator.new(options, accentColor)
+    local self = setmetatable({}, Separator)
+    self.text = options.Text or ""
+    self.width = 200
+    self.accent = accentColor or CONFIG.COLORS.ACCENT
+    
+    self.lineLeft = makeLine(CONFIG.COLORS.SEPARATOR, vec(0,0), vec(0,0), 1, CONFIG.ZINDEX.COMPONENT)
+    self.lineRight = makeLine(CONFIG.COLORS.SEPARATOR, vec(0,0), vec(0,0), 1, CONFIG.ZINDEX.COMPONENT)
+    
+    if self.text ~= "" then
+        self.label = makeText(self.text, CONFIG.TEXT_SIZE.VALUE, vec(0,0), self.accent, CONFIG.ZINDEX.COMPONENT)
+        self.label.Outline = false
+    end
+    
+    return self
+end
+
+function Separator:Update(x, y)
+    if self.text ~= "" then
+        local textWidth = #self.text * 6
+        self.lineLeft.From = vec(x, y + 6)
+        self.lineLeft.To = vec(x + (self.width - textWidth) / 2 - 5, y + 6)
+        self.lineRight.From = vec(x + (self.width + textWidth) / 2 + 5, y + 6)
+        self.lineRight.To = vec(x + self.width, y + 6)
+        self.label.Position = vec(x + (self.width - textWidth) / 2, y)
+    else
+        self.lineLeft.From = vec(x, y + 6)
+        self.lineLeft.To = vec(x + self.width, y + 6)
+        self.lineRight.Visible = false
+    end
+end
+
+function Separator:SetVisible(visible)
+    self.lineLeft.Visible = visible and Window.visible
+    self.lineRight.Visible = visible and Window.visible and self.text ~= ""
+    if self.label then self.label.Visible = visible and Window.visible end
+end
+
+-- COMPONENT: Paragraph
+local Paragraph = {}
+Paragraph.__index = Paragraph
+
+function Paragraph.new(options, accentColor)
+    local self = setmetatable({}, Paragraph)
+    self.title = options.Title or ""
+    self.content = options.Content or ""
+    self.width = 200
+    
+    self.titleLabel = makeText(self.title, CONFIG.TEXT_SIZE.LABEL, vec(0,0), CONFIG.COLORS.TEXT_DARK, CONFIG.ZINDEX.COMPONENT)
+    self.titleLabel.Outline = false
+    
+    self.lines = {}
+    local words = {}
+    for word in string.gmatch(self.content, "%S+") do table.insert(words, word) end
+    
+    local currentLine = ""
+    local lineIndex = 1
+    for _, word in ipairs(words) do
+        local testLine = currentLine == "" and word or (currentLine .. " " .. word)
+        if #testLine * 6 > self.width then
+            self.lines[lineIndex] = makeText(currentLine, CONFIG.TEXT_SIZE.VALUE, vec(0,0), CONFIG.COLORS.TEXT_LIGHT, CONFIG.ZINDEX.COMPONENT)
+            self.lines[lineIndex].Outline = false
+            lineIndex = lineIndex + 1
+            currentLine = word
+        else
+            currentLine = testLine
+        end
+    end
+    if currentLine ~= "" then
+        self.lines[lineIndex] = makeText(currentLine, CONFIG.TEXT_SIZE.VALUE, vec(0,0), CONFIG.COLORS.TEXT_LIGHT, CONFIG.ZINDEX.COMPONENT)
+        self.lines[lineIndex].Outline = false
+    end
+    
+    self.height = 20 + #self.lines * 14
+    
+    return self
+end
+
+function Paragraph:Update(x, y)
+    self.titleLabel.Position = vec(x, y)
+    for i, line in ipairs(self.lines) do
+        line.Position = vec(x, y + 18 + (i - 1) * 14)
+    end
+end
+
+function Paragraph:SetVisible(visible)
+    self.titleLabel.Visible = visible and Window.visible
+    for _, line in ipairs(self.lines) do
+        line.Visible = visible and Window.visible
+    end
+end
+
+function Paragraph:GetHeight() return self.height end
+
+-- COMPONENT: ProgressBar
+local ProgressBar = {}
+ProgressBar.__index = ProgressBar
+
+function ProgressBar.new(options, accentColor)
+    local self = setmetatable({}, ProgressBar)
+    self.name = options.Name or "Progress"
+    self.value = options.Default or 0
+    self.max = options.Max or 100
+    self.accent = accentColor or CONFIG.COLORS.ACCENT
+    self.width = options.Width or 150
+    self.showPercent = options.ShowPercent ~= false
+    
+    self.label = makeText(self.name, CONFIG.TEXT_SIZE.LABEL, vec(0,0), CONFIG.COLORS.TEXT, CONFIG.ZINDEX.COMPONENT)
+    self.label.Outline = false
+    self.bg = makeSquare(CONFIG.COLORS.SLIDER_BG, vec(self.width, 10), vec(0,0), true, 1, CONFIG.ZINDEX.COMPONENT)
+    self.fill = makeSquare(self.accent, vec(0, 10), vec(0,0), true, 1, CONFIG.ZINDEX.COMPONENT + 1)
+    self.percentText = makeText("0%", CONFIG.TEXT_SIZE.VALUE, vec(0,0), CONFIG.COLORS.TEXT, CONFIG.ZINDEX.COMPONENT + 2)
+    self.percentText.Outline = false
+    
+    return self
+end
+
+function ProgressBar:Update(x, y)
+    self.label.Position = vec(x, y)
+    self.bg.Position = vec(x, y + 20)
+    
+    local percent = math.clamp(self.value / self.max, 0, 1)
+    self.fill.Position = vec(x, y + 20)
+    self.fill.Size = vec(self.width * percent, 10)
+    
+    self.percentText.Text = math.floor(percent * 100) .. "%"
+    self.percentText.Position = vec(x + self.width + 10, y + 18)
+end
+
+function ProgressBar:SetVisible(visible)
+    self.label.Visible = visible and Window.visible
+    self.bg.Visible = visible and Window.visible
+    self.fill.Visible = visible and Window.visible
+    self.percentText.Visible = visible and Window.visible and self.showPercent
+end
+
+function ProgressBar:GetValue() return self.value end
+function ProgressBar:SetValue(v) self.value = math.clamp(v, 0, self.max) end
+function ProgressBar:Increment(amount) self.value = math.clamp(self.value + (amount or 1), 0, self.max) end
+
+-- Tab Class
 local Tab = {}
 Tab.__index = Tab
 
@@ -706,36 +1166,94 @@ function Tab.new(name, accentColor)
     return self
 end
 
-function Tab:Toggle(options)
-    local toggle = Toggle.new(options, self.accent)
-    table.insert(self.components, toggle)
-    return toggle
+function Tab:Toggle(options) local c = Toggle.new(options, self.accent); table.insert(self.components, c); return c end
+function Tab:Slider(options) local c = Slider.new(options, self.accent); table.insert(self.components, c); return c end
+function Tab:Dropdown(options) local c = Dropdown.new(options, self.accent); table.insert(self.components, c); return c end
+function Tab:MultiSelect(options) local c = MultiSelect.new(options, self.accent); table.insert(self.components, c); return c end
+function Tab:ColorPicker(options) local c = ColorPicker.new(options, self.accent); table.insert(self.components, c); return c end
+function Tab:Button(options) local c = Button.new(options, self.accent); table.insert(self.components, c); return c end
+function Tab:Keybind(options) local c = Keybind.new(options, self.accent); table.insert(self.components, c); return c end
+function Tab:TextBox(options) local c = TextBox.new(options, self.accent); table.insert(self.components, c); return c end
+function Tab:Label(options) local c = Label.new(options, self.accent); table.insert(self.components, c); return c end
+function Tab:Separator(options) local c = Separator.new(options or {}, self.accent); table.insert(self.components, c); return c end
+function Tab:Paragraph(options) local c = Paragraph.new(options, self.accent); table.insert(self.components, c); return c end
+function Tab:ProgressBar(options) local c = ProgressBar.new(options, self.accent); table.insert(self.components, c); return c end
+
+-- Notification System
+function Library:Notify(options)
+    local notif = {
+        title = options.Title or "Notification",
+        message = options.Message or "",
+        duration = options.Duration or 3,
+        type = options.Type or "Info",
+        startTime = tick(),
+        alpha = 0
+    }
+    
+    local typeColors = {
+        Success = CONFIG.COLORS.NOTIFICATION_SUCCESS,
+        Error = CONFIG.COLORS.NOTIFICATION_ERROR,
+        Warning = CONFIG.COLORS.NOTIFICATION_WARNING,
+        Info = CONFIG.COLORS.NOTIFICATION_INFO
+    }
+    
+    notif.bg = makeSquare(CONFIG.COLORS.NOTIFICATION_BG, vec(CONFIG.LAYOUT.NOTIFICATION_WIDTH, CONFIG.LAYOUT.NOTIFICATION_HEIGHT), vec(0,0), true, 0.95, CONFIG.ZINDEX.NOTIFICATION)
+    notif.accent = makeSquare(typeColors[notif.type] or CONFIG.COLORS.NOTIFICATION_INFO, vec(4, CONFIG.LAYOUT.NOTIFICATION_HEIGHT), vec(0,0), true, 1, CONFIG.ZINDEX.NOTIFICATION + 1)
+    notif.title = makeText(notif.title, CONFIG.TEXT_SIZE.NOTIFICATION, vec(0,0), CONFIG.COLORS.WHITE, CONFIG.ZINDEX.NOTIFICATION + 2)
+    notif.title.Outline = false
+    notif.message = makeText(notif.message, CONFIG.TEXT_SIZE.SMALL, vec(0,0), CONFIG.COLORS.TEXT_LIGHT, CONFIG.ZINDEX.NOTIFICATION + 2)
+    notif.message.Outline = false
+    
+    table.insert(Notifications, notif)
 end
 
-function Tab:Slider(options)
-    local slider = Slider.new(options, self.accent)
-    table.insert(self.components, slider)
-    return slider
+function Library:UpdateNotifications()
+    local screenWidth = 1920
+    local baseY = 100
+    local activeNotifs = {}
+    
+    for i, notif in ipairs(Notifications) do
+        local elapsed = tick() - notif.startTime
+        
+        if elapsed < notif.duration then
+            if elapsed < 0.3 then
+                notif.alpha = elapsed / 0.3
+            elseif elapsed > notif.duration - 0.3 then
+                notif.alpha = (notif.duration - elapsed) / 0.3
+            else
+                notif.alpha = 1
+            end
+            
+            local y = baseY + (#activeNotifs * (CONFIG.LAYOUT.NOTIFICATION_HEIGHT + CONFIG.LAYOUT.NOTIFICATION_SPACING))
+            local x = screenWidth - CONFIG.LAYOUT.NOTIFICATION_WIDTH - 20
+            
+            notif.bg.Position = vec(x, y)
+            notif.bg.Visible = true
+            notif.bg.Transparency = notif.alpha * 0.95
+            
+            notif.accent.Position = vec(x, y)
+            notif.accent.Visible = true
+            notif.accent.Transparency = notif.alpha
+            
+            notif.title.Position = vec(x + 12, y + 8)
+            notif.title.Visible = true
+            
+            notif.message.Position = vec(x + 12, y + 28)
+            notif.message.Visible = true
+            
+            table.insert(activeNotifs, notif)
+        else
+            notif.bg.Visible = false
+            notif.accent.Visible = false
+            notif.title.Visible = false
+            notif.message.Visible = false
+        end
+    end
+    
+    Notifications = activeNotifs
 end
 
-function Tab:Dropdown(options)
-    local dropdown = Dropdown.new(options, self.accent)
-    table.insert(self.components, dropdown)
-    return dropdown
-end
-
-function Tab:MultiSelect(options)
-    local multiSelect = MultiSelect.new(options, self.accent)
-    table.insert(self.components, multiSelect)
-    return multiSelect
-end
-
-function Tab:ColorPicker(options)
-    local colorPicker = ColorPicker.new(options, self.accent)
-    table.insert(self.components, colorPicker)
-    return colorPicker
-end
-
+-- Main Library Functions
 function Library:Create(options)
     local self = setmetatable({}, Library)
     
@@ -749,6 +1267,7 @@ function Library:Create(options)
     self.clickDebounce = false
     self.draggingSlider = nil
     self.draggingPicker = nil
+    self.lastToggle = 0
     
     self.shadow = makeSquare(CONFIG.COLORS.SHADOW, Window.size, Window.pos, true, 0.4, CONFIG.ZINDEX.SHADOW)
     self.border = makeSquare(CONFIG.COLORS.BORDER, Window.size, Window.pos, false, 1, CONFIG.ZINDEX.BORDER)
@@ -882,13 +1401,21 @@ function Library:UpdateUI()
             for _, comp in ipairs(tab.components) do
                 comp:Update(contentX, y)
                 comp:SetVisible(true)
-                y = y + CONFIG.LAYOUT.ITEM_HEIGHT + CONFIG.LAYOUT.ITEM_SPACING
-                if comp.isOpen then y = y + (#comp.items or #comp.options or 0) * (CONFIG.LAYOUT.DROPDOWN_ITEM_HEIGHT or 22) + 10 end
+                
+                local height = CONFIG.LAYOUT.ITEM_HEIGHT + CONFIG.LAYOUT.ITEM_SPACING
+                if comp.isOpen then 
+                    height = height + (#comp.items or #comp.options or 0) * (CONFIG.LAYOUT.DROPDOWN_ITEM_HEIGHT or 22) + 10 
+                end
+                if comp.GetHeight then height = comp:GetHeight() + CONFIG.LAYOUT.ITEM_SPACING end
+                
+                y = y + height
             end
         else
             for _, comp in ipairs(tab.components) do comp:SetVisible(false) end
         end
     end
+    
+    self:UpdateNotifications()
 end
 
 function Library:HandleInput()
@@ -961,11 +1488,14 @@ function Library:HandleToggle()
     local keys = getpressedkeys and getpressedkeys() or {}
     for _, k in ipairs(keys) do
         if k == self.toggleKey then
-            Window.visible = not Window.visible
-            if not Window.visible then
-                for _, obj in ipairs(DrawingObjects) do obj.Visible = false end
+            local now = tick()
+            if now - self.lastToggle > 0.25 then
+                Window.visible = not Window.visible
+                if not Window.visible then
+                    for _, obj in ipairs(DrawingObjects) do obj.Visible = false end
+                end
+                self.lastToggle = now
             end
-            task.wait(0.2)
             break
         end
     end
@@ -983,7 +1513,12 @@ end
 function Library:Unload()
     for _, obj in ipairs(DrawingObjects) do obj:Remove() end
     DrawingObjects = {}
+    Notifications = {}
     Window.visible = false
 end
+
+function Library:Show() Window.visible = true end
+function Library:Hide() Window.visible = false end
+function Library:Toggle() Window.visible = not Window.visible end
 
 return Library
